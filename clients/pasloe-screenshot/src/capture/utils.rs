@@ -1,6 +1,6 @@
 use image::{RgbaImage, imageops};
 
-pub fn dHash(image: &RgbaImage, resolution: u32) -> u64 {
+pub fn dHash(image: &RgbaImage, _resolution: u32) -> u64 {
     //TODO: really use resolution
     let resolution = 8;
     let resized = imageops::resize(

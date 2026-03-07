@@ -32,7 +32,7 @@ impl Storage for LocalStorage {
             let mut buf = Vec::new();
             capture
                 .image
-                .save_with_format(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)?;
+                .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)?;
             buf
         };
 
