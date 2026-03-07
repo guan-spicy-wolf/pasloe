@@ -9,12 +9,12 @@ $TaskName = "PasloeScreenshot"
 $BinName = "pasloe-screenshot.exe"
 
 Write-Host "==> 构建 pasloe-screenshot..."
-cargo build --release
+cargo build --release --quiet
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 # 安装二进制
 Write-Host "==> 安装二进制..."
-cargo install --path .
+cargo install --path . --quiet
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 # 解析实际二进制路径

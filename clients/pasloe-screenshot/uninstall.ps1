@@ -23,7 +23,7 @@ if ($Existing) {
 # 卸载二进制
 if (-not $KeepBin) {
     Write-Host "==> 卸载二进制..."
-    cargo uninstall pasloe-screenshot 2>$null
+    cargo uninstall pasloe-screenshot --quiet 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "    二进制不存在或已卸载，跳过"
     }

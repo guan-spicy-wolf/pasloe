@@ -7,7 +7,7 @@ pasloe 的截图事件客户端，定期捕获屏幕截图并将事件推送到 
 - 多显示器并发截图
 - 基于 dHash 的图像去重（内容未变化时跳过）
 - 截图存储到本地或 S3
-- 将截图事件推送到 pasloe（`source: pasloe-screenshot`, `kind: screenshot.captured`）
+- 将截图事件推送到 pasloe（`source_id: pasloe-screenshot`, `type: screenshot.captured`）
 
 ## 快速开始
 
@@ -106,18 +106,17 @@ cargo run -- capture --config config/config.toml
 
 ```json
 {
-  "source": "pasloe-screenshot",
-  "kind": "screenshot.captured",
-  "payload": {
-    "url": "s3://bucket/GS27QK_2560_1440_0_0_20260225_093000_000.png",
+  "source_id": "pasloe-screenshot",
+  "type": "screenshot.captured",
+  "data": {
+    "url": "https://s3.example.com/bucket/screenshots/pasloe-screenshot/GS27QK_2560_1440_0_0/20260225_093000_000.png",
     "monitor_id": "GS27QK_2560_1440_0_0"
   },
-  "tags": ["screenshot", "activity"],
-  "ts": "2026-02-25T09:30:00Z"
+  "session_id": null
 }
 ```
 
-可在 pasloe 中创建订阅规则匹配 `source: pasloe-screenshot` 来触发 webhook 通知。
+可在 pasloe 中使用 Webhooks 订阅匹配 `screenshot.captured` 的事件来触发通知。
 
 ## 构建
 
