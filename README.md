@@ -28,6 +28,8 @@ uv run uvicorn pasloe.app:app --reload
 
 ## API usage
 
+**Authentication**: All endpoints require an `X-API-Key` header if `API_KEY` is set in the environment.
+
 - **`POST /artifacts/presign`**
   Generate an S3 presigned URL for secure object uploads.
 - **`GET /events`**
