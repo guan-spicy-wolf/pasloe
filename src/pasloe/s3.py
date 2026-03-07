@@ -10,8 +10,12 @@ async def generate_presigned_url(filename: str, content_type: str) -> Dict[str, 
     if not settings.s3_endpoint or not settings.s3_bucket:
         raise ValueError("S3 is not configured")
 
-    object_name = f"{uuid.uuid4()}-{filename}"
-    
+    import os
+    dir_name, file_name = os.path.split(filename)
+    if dir_name:
+        object_name = f"{dir_name}/{uuid.uuid4()}-{file_name}"
+    else:
+        object_name = f"{uuid.uuid4()}-{filename}"
     session = aioboto3.Session()
     async with session.client(
         's3',
