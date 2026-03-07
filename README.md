@@ -23,7 +23,7 @@ cp .env.example .env
 
 ```bash
 uv sync
-uv run uvicorn pasloe.api:app --reload
+uv run uvicorn pasloe.app:app --reload
 ```
 
 ## API usage
