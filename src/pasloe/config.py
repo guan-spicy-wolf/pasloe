@@ -27,7 +27,12 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     api_key: str | None = None
+    allow_insecure_http: bool = False
     
+    # Webhooks
+    webhook_max_retries: int = 3
+    webhook_retry_backoff: float = 1.0
+
     # Environment name
     env: str = "dev"
     

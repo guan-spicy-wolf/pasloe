@@ -133,11 +133,26 @@ async def _fire_webhooks(db: AsyncSession, event: EventRecord) -> None:
     }
 
     async def _post(url: str) -> None:
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                await client.post(url, json=payload)
-        except Exception as exc:
-            logger.debug("Webhook delivery failed for %s: %s", url, exc)
+        from .config import get_settings
+        settings = get_settings()
+        max_retries = settings.webhook_max_retries
+        backoff = settings.webhook_retry_backoff
+
+        for attempt in range(max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.post(url, json=payload)
+                    resp.raise_for_status()
+                    logger.info("Webhook delivered successfully to %s", url)
+                    return
+            except Exception as exc:
+                if attempt < max_retries:
+                    wait_time = backoff * (2 ** attempt)
+                    logger.warning("Webhook delivery failed for %s (attempt %d/%d). Retrying in %.1fs: %s", 
+                                   url, attempt + 1, max_retries + 1, wait_time, exc)
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error("Webhook delivery failed for %s after %d attempts: %s", url, max_retries + 1, exc)
 
     tasks = [
         asyncio.create_task(_post(wh.url))

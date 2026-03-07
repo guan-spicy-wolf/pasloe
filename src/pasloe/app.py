@@ -10,6 +10,12 @@ import os
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    from .config import get_settings
+    if not get_settings().allow_insecure_http:
+        print("\n" + "!" * 60)
+        print("  SECURITY WARNING: Pasloe is running in secure mode.")
+        print("  Ensure you are using HTTPS or set ALLOW_INSECURE_HTTP=True.")
+        print("!" * 60 + "\n")
     try:
         yield
     finally:

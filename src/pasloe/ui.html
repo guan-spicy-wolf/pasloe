@@ -109,6 +109,14 @@
             </div>
         </nav>
 
+        <!-- Security Warning Banner -->
+        <div v-if="isUnsecured" class="bg-amber-500/10 border-b border-amber-500/20 py-2 px-4 text-center">
+            <p class="text-xs font-semibold text-amber-400 flex items-center justify-center gap-2">
+                <i data-lucide="alert-triangle" class="w-3.5 h-3.5"></i>
+                Caution: Using unsecured HTTP. API Keys will be sent in plain text.
+            </p>
+        </div>
+
         <!-- Main Content -->
         <main class="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8">
 
@@ -461,6 +469,7 @@
             setup() {
                 const apiKey = ref('');
                 const tempApiKey = ref('');
+                const isUnsecured = ref(location.protocol !== 'https:');
                 const currentTab = ref('webhooks');
                 const webhooks = ref([]);
                 const sources = ref([]);
@@ -689,6 +698,7 @@
                     apiKey,
                     tempApiKey,
                     currentTab,
+                    isUnsecured,
                     webhooks,
                     sources,
                     events,
