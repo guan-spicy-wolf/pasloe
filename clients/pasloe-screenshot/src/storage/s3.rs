@@ -30,7 +30,7 @@ impl Storage for S3Storage {
         );
 
         let mut buffer = Vec::new();
-        capture.image.save_with_format(
+        capture.image.write_to(
             &mut std::io::Cursor::new(&mut buffer),
             image::ImageFormat::Png,
         )?;

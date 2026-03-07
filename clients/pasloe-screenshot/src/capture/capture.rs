@@ -334,11 +334,11 @@ impl Capture {
             .map(|m| {
                 format!(
                     "{}_{}_{}_{}_{}",
-                    m.name(),
-                    m.width(),
-                    m.height(),
-                    m.x(),
-                    m.y()
+                    m.name().unwrap_or_else(|_| "Unknown".to_string()),
+                    m.width().unwrap_or(0),
+                    m.height().unwrap_or(0),
+                    m.x().unwrap_or(0),
+                    m.y().unwrap_or(0)
                 )
             })
             .collect();
