@@ -1,7 +1,7 @@
 [project]
 name = "pasloe"
 version = "0.1.0"
-description = "Palimpsest V2 — Append-only event store service"
+description = "Pasloe — Semantically-agnostic append-only event store with schema-driven data promotion"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
