@@ -24,27 +24,9 @@ def get_session_factory():
 
 
 async def init_db():
-    """Create all tables and rebuild promoted table cache."""
+    """Create all tables."""
     async with get_engine().begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    await _rebuild_promoted_tables()
-
-
-async def _rebuild_promoted_tables():
-    """On startup, reconstruct Table objects for all schemas and ensure tables exist."""
-    from .models import EventTypeSchemaRecord
-    from .promoted import get_or_build_table, create_promoted_table
-    from sqlalchemy import select
-
-    factory = get_session_factory()
-    async with factory() as session:
-        result = await session.execute(select(EventTypeSchemaRecord))
-        schemas = list(result.scalars().all())
-
-    engine = get_engine()
-    for schema_record in schemas:
-        table = get_or_build_table(schema_record.table_name, schema_record.schema_)
-        await create_promoted_table(engine, table)
 
 
 async def close_engine():
@@ -54,9 +36,6 @@ async def close_engine():
         await _engine.dispose()
     _engine = None
     _SessionLocal = None
-
-    from .promoted import clear_table_cache
-    clear_table_cache()
 
 
 async def get_session() -> AsyncSession:

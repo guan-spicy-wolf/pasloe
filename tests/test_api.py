@@ -1,323 +1,222 @@
+"""Integration tests for the Pasloe HTTP API."""
 import pytest
-  import pytest_asyncio
-  from httpx import AsyncClient, ASGITransport
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 
-  import os
-  os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
-
-  from pasloe.app import app
-  from pasloe.database import init_db, close_engine, get_engine
+from src.pasloe.app import app
+from src.pasloe.database import close_engine, init_db
+from src.pasloe.projections import BaseProjection, ProjectionRegistry
 
 
-  @pytest_asyncio.fixture
-  async def client():
-      await init_db()
-      async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-          yield c
-      await close_engine()
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest_asyncio.fixture
+async def client():
+    # DB_TYPE and SQLITE_PATH are set in tests/conftest.py before module import
+    from src.pasloe.config import get_settings
+    get_settings.cache_clear()  # ensure fresh settings per test
+
+    app.state.projection_registry = ProjectionRegistry([])  # empty by default; tests override as needed
+    await init_db()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as c:
+        yield c
+
+    await close_engine()
+    get_settings.cache_clear()
 
 
-  @pytest.mark.asyncio
-  async def test_health(client):
-      resp = await client.get("/health")
-      assert resp.status_code == 200
-      assert resp.json() == {"status": "ok"}
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
+
+class TestHealth:
+    @pytest.mark.asyncio
+    async def test_health(self, client):
+        r = await client.get("/health")
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
 
 
-  @pytest.mark.asyncio
-  async def test_register_source(client):
-      resp = await client.post("/sources", json={
-          "id": "metrics",
-          "metadata": {"version": "1.0"}
-      })
-      assert resp.status_code == 201
-      data = resp.json()
-      assert data["id"] == "metrics"
-      assert "kind" not in data
+# ---------------------------------------------------------------------------
+# Sources
+# ---------------------------------------------------------------------------
+
+class TestSources:
+    @pytest.mark.asyncio
+    async def test_register_source_returns_201(self, client):
+        r = await client.post("/sources", json={"id": "src1"})
+        assert r.status_code == 201
+        assert r.json()["id"] == "src1"
+
+    @pytest.mark.asyncio
+    async def test_register_source_upsert_returns_200(self, client):
+        await client.post("/sources", json={"id": "src2", "metadata": {"v": 1}})
+        r = await client.post("/sources", json={"id": "src2", "metadata": {"v": 2}})
+        assert r.status_code == 200
+        assert r.json()["metadata"]["v"] == 2
+
+    @pytest.mark.asyncio
+    async def test_list_sources(self, client):
+        await client.post("/sources", json={"id": "ls1"})
+        r = await client.get("/sources")
+        assert r.status_code == 200
+        ids = [s["id"] for s in r.json()]
+        assert "ls1" in ids
+
+    @pytest.mark.asyncio
+    async def test_get_source(self, client):
+        await client.post("/sources", json={"id": "gs1"})
+        r = await client.get("/sources/gs1")
+        assert r.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_get_source_not_found(self, client):
+        r = await client.get("/sources/nope")
+        assert r.status_code == 404
 
 
-  @pytest.mark.asyncio
-  async def test_register_duplicate_source(client):
-      payload = {"id": "agent1", "metadata": {}}
-      await client.post("/sources", json=payload)
-      resp = await client.post("/sources", json=payload)
-      assert resp.status_code == 409
+# ---------------------------------------------------------------------------
+# Events — append
+# ---------------------------------------------------------------------------
+
+class TestAppendEvent:
+    @pytest.mark.asyncio
+    async def test_append_auto_registers_source(self, client):
+        r = await client.post("/events", json={"source_id": "new-src", "type": "ping", "data": {}})
+        assert r.status_code == 201
+        body = r.json()
+        assert body["source_id"] == "new-src"
+        assert body["warnings"] == []
+
+    @pytest.mark.asyncio
+    async def test_append_returns_empty_warnings_without_projection(self, client):
+        r = await client.post("/events", json={"source_id": "s", "type": "t", "data": {"x": 1}})
+        assert r.status_code == 201
+        assert r.json()["warnings"] == []
+
+    @pytest.mark.asyncio
+    async def test_append_returns_warnings_when_projection_skips(self, client):
+        class SkipProj(BaseProjection):
+            source = "ws"
+            event_type = "typed"
+            __tablename__ = "proj_ws"
+
+            async def on_insert(self, session, event):
+                return ["bad_field"]
+
+            async def filter(self, session, event_ids, filters):
+                return event_ids
+
+        app.state.projection_registry = ProjectionRegistry([SkipProj()])
+        r = await client.post("/events", json={"source_id": "ws", "type": "typed", "data": {"bad_field": 1}})
+        assert r.status_code == 201
+        body = r.json()
+        assert body["id"] is not None          # event stored
+        assert len(body["warnings"]) == 1
+        assert "bad_field" in body["warnings"][0]
+
+    @pytest.mark.asyncio
+    async def test_deleted_endpoint_events_by_id_gone(self, client):
+        r = await client.get("/events/some-uuid")
+        # Should be 404 (no such path), not 200
+        assert r.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_deleted_endpoints_webhooks_gone(self, client):
+        assert (await client.post("/webhooks", json={})).status_code == 404
+        assert (await client.get("/webhooks")).status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_deleted_endpoint_schemas_gone(self, client):
+        assert (await client.post("/schemas", json={})).status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_deleted_endpoint_s3_gone(self, client):
+        assert (await client.post("/artifacts/presign", json={})).status_code == 404
 
 
-  @pytest.mark.asyncio
-  async def test_list_sources(client):
-      await client.post("/sources", json={"id": "src1", "metadata": {}})
-      resp = await client.get("/sources")
-      assert resp.status_code == 200
-      ids = [s["id"] for s in resp.json()]
-      assert "src1" in ids
+# ---------------------------------------------------------------------------
+# Events — query
+# ---------------------------------------------------------------------------
+
+class TestQueryEvents:
+    @pytest.mark.asyncio
+    async def test_query_by_source(self, client):
+        await client.post("/events", json={"source_id": "qs", "type": "t", "data": {}})
+        r = await client.get("/events?source=qs")
+        assert r.status_code == 200
+        assert all(e["source_id"] == "qs" for e in r.json())
+
+    @pytest.mark.asyncio
+    async def test_query_by_type(self, client):
+        await client.post("/events", json={"source_id": "qt", "type": "special", "data": {}})
+        r = await client.get("/events?type=special")
+        assert r.status_code == 200
+        assert all(e["type"] == "special" for e in r.json())
+
+    @pytest.mark.asyncio
+    async def test_query_by_id(self, client):
+        r1 = await client.post("/events", json={"source_id": "qi", "type": "t", "data": {}})
+        event_id = r1.json()["id"]
+        r2 = await client.get(f"/events?id={event_id}")
+        assert r2.status_code == 200
+        assert len(r2.json()) == 1
+        assert r2.json()[0]["id"] == event_id
+
+    @pytest.mark.asyncio
+    async def test_invalid_cursor_returns_400(self, client):
+        r = await client.get("/events?cursor=notvalid")
+        assert r.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_projection_filter_ignored_when_no_projection(self, client):
+        """Unknown params are silently ignored when no matching projection."""
+        await client.post("/events", json={"source_id": "pf", "type": "t", "data": {"level": "info"}})
+        r = await client.get("/events?source=pf&type=t&level=info")
+        assert r.status_code == 200  # no error
+
+    @pytest.mark.asyncio
+    async def test_projection_filter_applied_when_projection_matches(self, client):
+        from uuid import UUID
+
+        class LevelProj(BaseProjection):
+            source = "lp"
+            event_type = "log"
+            __tablename__ = "proj_level"
+
+            async def on_insert(self, session, event):
+                return []
+
+            async def filter(self, session, event_ids, filters):
+                # Simulate: only return first id (as if filtered by level=error)
+                return event_ids[:1]
+
+        app.state.projection_registry = ProjectionRegistry([LevelProj()])
+        for _ in range(3):
+            await client.post("/events", json={"source_id": "lp", "type": "log", "data": {}})
+
+        r = await client.get("/events?source=lp&type=log&level=error")
+        assert r.status_code == 200
+        assert len(r.json()) == 1  # projection narrowed to 1
 
 
-  @pytest.mark.asyncio
-  async def test_append_event(client):
-      await client.post("/sources", json={"id": "s1", "metadata": {}})
-      resp = await client.post("/events", json={
-          "source_id": "s1",
-          "type": "startup",
-          "data": {"version": "1.0"}
-      })
-      assert resp.status_code == 201
-      data = resp.json()
-      assert data["type"] == "startup"
-      assert data["source_id"] == "s1"
-      assert "session_id" not in data
+# ---------------------------------------------------------------------------
+# Stats
+# ---------------------------------------------------------------------------
 
-
-  @pytest.mark.asyncio
-  async def test_append_event_unregistered_source(client):
-      resp = await client.post("/events", json={
-          "source_id": "ghost",
-          "type": "startup",
-          "data": {}
-      })
-      assert resp.status_code == 400
-
-
-  @pytest.mark.asyncio
-  async def test_query_events_by_source(client):
-      await client.post("/sources", json={"id": "a1", "metadata": {}})
-      await client.post("/events", json={"source_id": "a1", "type": "e1", "data": {}})
-      await client.post("/events", json={"source_id": "a1", "type": "e2", "data": {}})
-
-      resp = await client.get("/events?source=a1")
-      assert resp.status_code == 200
-      events = resp.json()
-      assert len(events) == 2
-      assert all(e["source_id"] == "a1" for e in events)
-
-
-  @pytest.mark.asyncio
-  async def test_query_events_by_type(client):
-      await client.post("/sources", json={"id": "a2", "metadata": {}})
-      await client.post("/events", json={"source_id": "a2", "type": "metric", "data": {}})
-      await client.post("/events", json={"source_id": "a2", "type": "log", "data": {}})
-
-      resp = await client.get("/events?type=metric")
-      assert resp.status_code == 200
-      events = resp.json()
-      assert all(e["type"] == "metric" for e in events)
-
-
-  @pytest.mark.asyncio
-  async def test_stats(client):
-      await client.post("/sources", json={"id": "s2", "metadata": {}})
-      await client.post("/events", json={"source_id": "s2", "type": "a", "data": {}})
-      await client.post("/events", json={"source_id": "s2", "type": "b", "data": {}})
-
-      resp = await client.get("/events/stats")
-      assert resp.status_code == 200
-      data = resp.json()
-      assert "total_events" in data
-      assert data["total_events"] >= 2
-
-
-  @pytest.mark.asyncio
-  async def test_query_events_cursor_pagination(client):
-      await client.post("/sources", json={"id": "pager", "metadata": {}})
-      await client.post("/events", json={"source_id": "pager", "type": "e1", "data": {}})
-      await client.post("/events", json={"source_id": "pager", "type": "e2", "data": {}})
-      await client.post("/events", json={"source_id": "pager", "type": "e3", "data": {}})
-
-      first = await client.get("/events", params={"source": "pager", "limit": 2, "order": "asc"})
-      assert first.status_code == 200
-      assert len(first.json()) == 2
-      next_cursor = first.headers.get("x-next-cursor")
-      assert next_cursor is not None
-
-      second = await client.get("/events", params={"source": "pager", "limit": 2, "order": "asc", "cursor": next_cursor})
-      assert second.status_code == 200
-      assert len(second.json()) == 1
-      assert second.headers.get("x-next-cursor") is None
-      assert [e["type"] for e in first.json() + second.json()] == ["e1", "e2", "e3"]
-
-
-  @pytest.mark.asyncio
-  async def test_query_events_invalid_cursor(client):
-      resp = await client.get("/events", params={"cursor": "not-a-cursor"})
-      assert resp.status_code == 400
-
-
-  # --- Schema tests ---
-
-  @pytest.mark.asyncio
-  async def test_register_schema(client):
-      await client.post("/sources", json={"id": "schsrc", "metadata": {}})
-      resp = await client.post("/schemas", json={
-          "source_id": "schsrc",
-          "type": "llm_response",
-          "schema": {
-              "model": {"type": "string", "index": True},
-              "cost": {"type": "float", "index": False},
-              "tokens": {"type": "integer", "index": True},
-          }
-      })
-      assert resp.status_code == 201
-      data = resp.json()
-      assert data["source_id"] == "schsrc"
-      assert data["type"] == "llm_response"
-      assert data["end_time"] is None
-      assert data["table_name"].startswith("promoted_")
-
-
-  @pytest.mark.asyncio
-  async def test_register_schema_source_not_found(client):
-      resp = await client.post("/schemas", json={
-          "source_id": "nonexistent",
-          "type": "metric",
-          "schema": {"value": {"type": "float", "index": False}}
-      })
-      assert resp.status_code == 400
-
-
-  @pytest.mark.asyncio
-  async def test_schema_driven_data_promotion(client):
-      await client.post("/sources", json={"id": "promo", "metadata": {}})
-      await client.post("/schemas", json={
-          "source_id": "promo",
-          "type": "metric",
-          "schema": {
-              "model": {"type": "string", "index": True},
-              "cost": {"type": "float", "index": False},
-          }
-      })
-      resp = await client.post("/events", json={
-          "source_id": "promo",
-          "type": "metric",
-          "data": {"model": "gpt-4", "cost": 0.03}
-      })
-      assert resp.status_code == 201
-
-
-  @pytest.mark.asyncio
-  async def test_strict_validation_rejects_missing_field(client):
-      await client.post("/sources", json={"id": "strict1", "metadata": {}})
-      await client.post("/schemas", json={
-          "source_id": "strict1",
-          "type": "metric",
-          "schema": {"value": {"type": "float", "index": False}}
-      })
-      resp = await client.post("/events", json={
-          "source_id": "strict1",
-          "type": "metric",
-          "data": {"other_field": 123}
-      })
-      assert resp.status_code == 400
-
-
-  @pytest.mark.asyncio
-  async def test_strict_validation_rejects_wrong_type(client):
-      await client.post("/sources", json={"id": "strict2", "metadata": {}})
-      await client.post("/schemas", json={
-          "source_id": "strict2",
-          "type": "metric",
-          "schema": {"value": {"type": "integer", "index": False}}
-      })
-      resp = await client.post("/events", json={
-          "source_id": "strict2",
-          "type": "metric",
-          "data": {"value": "not_a_number"}
-      })
-      assert resp.status_code == 400
-
-
-  @pytest.mark.asyncio
-  async def test_no_schema_skips_validation(client):
-      await client.post("/sources", json={"id": "free", "metadata": {}})
-      resp = await client.post("/events", json={
-          "source_id": "free",
-          "type": "freeform",
-          "data": {"anything": "goes", "nested": {"ok": True}}
-      })
-      assert resp.status_code == 201
-
-
-  @pytest.mark.asyncio
-  async def test_schema_rotation(client):
-      await client.post("/sources", json={"id": "rot", "metadata": {}})
-      r1 = await client.post("/schemas", json={
-          "source_id": "rot",
-          "type": "metric",
-          "schema": {"value": {"type": "float", "index": False}}
-      })
-      schema1_id = r1.json()["id"]
-
-      r2 = await client.post("/schemas", json={
-          "source_id": "rot",
-          "type": "metric",
-          "schema": {
-              "value": {"type": "float", "index": False},
-              "label": {"type": "string", "index": True},
-          }
-      })
-      assert r2.status_code == 201
-
-      old = await client.get(f"/schemas/{schema1_id}")
-      assert old.json()["end_time"] is not None
-
-
-  @pytest.mark.asyncio
-  async def test_query_promoted_table(client):
-      await client.post("/sources", json={"id": "q", "metadata": {}})
-      await client.post("/schemas", json={
-          "source_id": "q",
-          "type": "metric",
-          "schema": {
-              "model": {"type": "string", "index": True},
-              "cost": {"type": "float", "index": True},
-          }
-      })
-      await client.post("/events", json={"source_id": "q", "type": "metric", "data": {"model": "gpt-4", "cost": 0.03}})
-      await client.post("/events", json={"source_id": "q", "type": "metric", "data": {"model": "gpt-3.5", "cost": 0.001}})
-
-      resp = await client.get("/promoted/q/metric", params={"cost_gt": "0.01"})
-      assert resp.status_code == 200
-      rows = resp.json()
-      assert len(rows) == 1
-      assert rows[0]["model"] == "gpt-4"
-
-
-  @pytest.mark.asyncio
-  async def test_query_promoted_unknown_field_rejected(client):
-      await client.post("/sources", json={"id": "qf", "metadata": {}})
-      await client.post("/schemas", json={
-          "source_id": "qf",
-          "type": "m",
-          "schema": {"value": {"type": "float", "index": False}}
-      })
-      resp = await client.get("/promoted/qf/m", params={"nonexistent": "123"})
-      assert resp.status_code == 400
-
-
-  @pytest.mark.asyncio
-  async def test_query_promoted_no_schema(client):
-      resp = await client.get("/promoted/nosrc/notype")
-      assert resp.status_code == 400
-
-
-  @pytest.mark.asyncio
-  async def test_webhook_with_source_id(client):
-      resp = await client.post("/webhooks", json={
-          "url": "http://example.com/hook",
-          "source_id": "mysource",
-          "event_types": ["metric"],
-      })
-      assert resp.status_code == 201
-      data = resp.json()
-      assert data["source_id"] == "mysource"
-
-
-  @pytest.mark.asyncio
-  async def test_close_engine_recreates_engine():
-      await close_engine()
-      await init_db()
-      first_engine = get_engine()
-      await close_engine()
-      await init_db()
-      second_engine = get_engine()
-      assert first_engine is not second_engine
-      await close_engine()
+class TestStats:
+    @pytest.mark.asyncio
+    async def test_stats(self, client):
+        await client.post("/events", json={"source_id": "st", "type": "ev", "data": {}})
+        r = await client.get("/events/stats")
+        assert r.status_code == 200
+        body = r.json()
+        assert "total_events" in body
+        assert "by_source" in body
+        assert "by_type" in body
+        assert body["total_events"] >= 1

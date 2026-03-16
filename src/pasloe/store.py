@@ -100,7 +100,7 @@ async def append_event(
     await _ensure_source(db, event.source_id)
 
     record = EventRecord(
-        id=uuid7(),
+        id=str(uuid7()),
         source_id=event.source_id,
         type=event.type,
         data=event.data,
