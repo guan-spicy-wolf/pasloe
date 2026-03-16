@@ -1,153 +1,104 @@
+from __future__ import annotations
+
 from datetime import datetime
-  from typing import Optional, Any, Dict, List
-  from uuid import UUID
 
-  from pydantic import BaseModel, ConfigDict, Field
-  from sqlalchemy import Column, String, DateTime, Index, ForeignKey, Text, JSON
-  from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-  from sqlalchemy.orm import declarative_base, relationship
-  from sqlalchemy.sql import func
+from sqlalchemy import Column, DateTime, ForeignKey, Index, String, func
+from sqlalchemy.orm import DeclarativeBase, relationship
 
-  from .config import is_sqlite
-
-  Base = declarative_base()
-
-  if is_sqlite():
-      from sqlalchemy import JSON
-      JSON_TYPE = JSON
-      VECTOR_TYPE = Text
-      ARRAY_TEXT_TYPE = JSON
-  else:
-      from sqlalchemy.dialects.postgresql import JSONB, ARRAY
-      from pgvector.sqlalchemy import Vector
-      JSON_TYPE = JSONB
-      VECTOR_TYPE = Vector(1536)
-      ARRAY_TEXT_TYPE = ARRAY(String)
+from .config import is_sqlite
 
 
-  # ---------------------------------------------------------------------------
-  # ORM models
-  # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Database-type helpers
+# ---------------------------------------------------------------------------
 
-  class SourceRecord(Base):
-      __tablename__ = "sources"
-
-      id = Column(String, primary_key=True)
-      metadata_ = Column("metadata", JSON_TYPE, nullable=False, server_default='{}')
-      registered_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-      events = relationship("EventRecord", back_populates="source")
+if is_sqlite():
+    from sqlalchemy import JSON as JSON_TYPE
+    from sqlalchemy import Text as UUID_TYPE
+else:
+    from sqlalchemy.dialects.postgresql import JSONB as JSON_TYPE  # type: ignore
+    from sqlalchemy.dialects.postgresql import UUID as UUID_TYPE  # type: ignore
 
 
-  class EventRecord(Base):
-      __tablename__ = "events"
+# ---------------------------------------------------------------------------
+# ORM base
+# ---------------------------------------------------------------------------
 
-      id = Column(PG_UUID(as_uuid=True), primary_key=True)
-      source_id = Column(String, ForeignKey("sources.id"), nullable=False)
-      type = Column(String, nullable=False)
-      ts = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-      data = Column(JSON_TYPE, nullable=False, server_default='{}')
-      embedding = Column(VECTOR_TYPE, nullable=True)
-
-      source = relationship("SourceRecord", back_populates="events")
-
-      __table_args__ = (
-          Index('idx_events_ts', 'ts'),
-          Index('idx_events_source', 'source_id'),
-          Index('idx_events_type', 'type'),
-      )
+class Base(DeclarativeBase):
+    pass
 
 
-  class WebhookRecord(Base):
-      __tablename__ = "webhooks"
+# ---------------------------------------------------------------------------
+# ORM models
+# ---------------------------------------------------------------------------
 
-      id = Column(PG_UUID(as_uuid=True), primary_key=True)
-      url = Column(String, nullable=False)
-      source_id = Column(String, nullable=True)
-      event_types = Column(ARRAY_TEXT_TYPE, nullable=False, server_default='[]')
-      secret = Column(String, nullable=True)
-      created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+class SourceRecord(Base):
+    __tablename__ = "sources"
 
+    id = Column(String, primary_key=True)
+    metadata_ = Column("metadata", JSON_TYPE, server_default="{}", nullable=False)
+    registered_at = Column(DateTime(timezone=True), server_default=func.now())
 
-  class EventTypeSchemaRecord(Base):
-      __tablename__ = "event_type_schemas"
-
-      id = Column(PG_UUID(as_uuid=True), primary_key=True)
-      source_id = Column(String, ForeignKey("sources.id"), nullable=False)
-      type = Column(String, nullable=False)
-      schema_ = Column("schema", JSON_TYPE, nullable=False)
-      table_name = Column(String, nullable=False, unique=True)
-      start_time = Column(DateTime(timezone=True), nullable=False)
-      end_time = Column(DateTime(timezone=True), nullable=True)
-
-      __table_args__ = (
-          Index('idx_schema_source_type_active', 'source_id', 'type', 'end_time'),
-      )
+    events = relationship("EventRecord", back_populates="source")
 
 
-  # ---------------------------------------------------------------------------
-  # Pydantic models
-  # ---------------------------------------------------------------------------
+class EventRecord(Base):
+    __tablename__ = "events"
 
-  class SourceCreate(BaseModel):
-      id: str
-      metadata: Dict[str, Any] = Field(default_factory=dict)
+    id = Column(UUID_TYPE, primary_key=True)
+    source_id = Column(String, ForeignKey("sources.id"), nullable=False)
+    type = Column(String, nullable=False)
+    ts = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    data = Column(JSON_TYPE, server_default="{}", nullable=False)
 
+    source = relationship("SourceRecord", back_populates="events")
 
-  class EventCreate(BaseModel):
-      source_id: str
-      type: str = Field(min_length=1)
-      data: Dict[str, Any] = Field(default_factory=dict)
-
-
-  class Event(BaseModel):
-      id: UUID
-      source_id: str
-      type: str
-      ts: datetime
-      data: Dict[str, Any]
-
-      model_config = ConfigDict(from_attributes=True)
+    __table_args__ = (
+        Index("idx_events_ts", "ts"),
+        Index("idx_events_source", "source_id"),
+        Index("idx_events_type", "type"),
+    )
 
 
-  class WebhookCreate(BaseModel):
-      url: str = Field(min_length=1)
-      source_id: Optional[str] = None
-      event_types: List[str] = Field(default_factory=list)
-      secret: Optional[str] = None
+# ---------------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
-  class Webhook(BaseModel):
-      id: UUID
-      url: str
-      source_id: Optional[str] = None
-      event_types: List[str]
-      secret: Optional[str] = None
-      created_at: datetime
-
-      model_config = ConfigDict(from_attributes=True)
+class SourceCreate(BaseModel):
+    id: str
+    metadata: dict = Field(default_factory=dict)
 
 
-  class SchemaFieldDefinition(BaseModel):
-      type: str
-      index: bool = False
+class EventCreate(BaseModel):
+    source_id: str
+    type: str = Field(min_length=1)
+    data: dict = Field(default_factory=dict)
 
 
-  class EventTypeSchemaCreate(BaseModel):
-      source_id: str
-      type: str = Field(min_length=1)
-      schema_: Dict[str, SchemaFieldDefinition] = Field(alias="schema")
+class Event(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
 
-      model_config = ConfigDict(populate_by_name=True)
+    # id is UUID7. Typed as str for JSON serialisation convenience.
+    # Pydantic v2 coerces UUID → str automatically. SQLite stores as text,
+    # Postgres stores as native UUID; both coerce cleanly.
+    id: str
+    source_id: str
+    type: str
+    ts: datetime
+    data: dict
 
 
-  class EventTypeSchema(BaseModel):
-      id: UUID
-      source_id: str
-      type: str
-      schema_: Dict[str, Any] = Field(alias="schema")
-      table_name: str
-      start_time: datetime
-      end_time: Optional[datetime] = None
+class EventCreatedResponse(BaseModel):
+    """Response model for POST /events only — extends Event with warnings.
+    GET /events returns plain Event (no warnings field)."""
+    model_config = ConfigDict(from_attributes=True)
 
-      model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+    id: str
+    source_id: str
+    type: str
+    ts: datetime
+    data: dict
+    warnings: list[str] = Field(default_factory=list)
