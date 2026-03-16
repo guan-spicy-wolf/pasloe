@@ -11,13 +11,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid_extensions import uuid7
 
 from .models import (
-    SourceRecord, EventRecord, WebhookRecord, EventTypeSchemaRecord,
-    SourceCreate, EventCreate, WebhookCreate, EventTypeSchemaCreate,
+    SourceRecord, EventRecord,
+    SourceCreate, EventCreate,
+    # WebhookRecord, EventTypeSchemaRecord,  # TODO: Task 7 - removed in refactor
+    # WebhookCreate, EventTypeSchemaCreate,  # TODO: Task 7 - removed in refactor
 )
-from .promoted import (
-    get_or_build_table, create_promoted_table, insert_promoted_row,
-    validate_event_data, generate_table_name,
-)
+# TODO: Task 7 - promoted module removed in refactor
+# from .promoted import (
+#     get_or_build_table, create_promoted_table, insert_promoted_row,
+#     validate_event_data, generate_table_name,
+# )
 
 logger = logging.getLogger(__name__)
 

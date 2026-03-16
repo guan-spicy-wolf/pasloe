@@ -10,11 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .database import get_session
 from .models import (
     SourceCreate, EventCreate, Event,
-    WebhookCreate, Webhook,
-    EventTypeSchemaCreate, EventTypeSchema,
+    # WebhookCreate, Webhook,  # TODO: Task 8 - removed in refactor
+    # EventTypeSchemaCreate, EventTypeSchema,  # TODO: Task 8 - removed in refactor
 )
 from . import store
-from . import s3
+# from . import s3  # TODO: Task 8 - s3 module removed in refactor
 from .config import get_settings
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
