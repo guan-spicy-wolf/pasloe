@@ -14,6 +14,7 @@ dependencies = [
     "pydantic-settings>=2.2.1",
     "uuid7>=0.1.0",
     "httpx>=0.27",
+    "alembic>=1.18.4",
 ]
 
 [project.optional-dependencies]

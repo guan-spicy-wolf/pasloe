@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -104,6 +104,7 @@ async def append_event(
         source_id=event.source_id,
         type=event.type,
         data=event.data,
+        ts=datetime.now(timezone.utc),
     )
     db.add(record)
     await db.flush()
