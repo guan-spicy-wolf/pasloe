@@ -5,13 +5,14 @@ import logging
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from fastapi.security import APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pydantic import BaseModel, ConfigDict
 
 from . import store
+from . import webhook_delivery
 from .database import get_session
 from .config import get_settings
 from .models import (
@@ -20,6 +21,8 @@ from .models import (
     EventCreatedResponse,
     SourceCreate,
     SourceRecord,
+    WebhookCreate,
+    WebhookResponse,
 )
 from .projections import ProjectionRegistry
 
@@ -107,10 +110,31 @@ async def get_source(
 async def append_event(
     body: EventCreate,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_session),
 ) -> EventCreatedResponse:
     registry: ProjectionRegistry = _get_registry(request)
     record, warnings = await store.append_event(db, body, projection_registry=registry)
+
+    event_payload = {
+        "id": str(record.id),
+        "source_id": record.source_id,
+        "type": record.type,
+        "ts": record.ts.isoformat(),
+        "data": record.data,
+    }
+
+    async def _deliver():
+        from .database import get_session_factory
+        factory = get_session_factory()
+        async with factory() as session:
+            matching = await store.list_webhooks_for_event(
+                session, record.type, record.source_id
+            )
+        await webhook_delivery.fire_webhooks(matching, event_payload)
+
+    background_tasks.add_task(_deliver)
+
     return EventCreatedResponse(
         id=str(record.id),
         source_id=record.source_id,
@@ -178,6 +202,44 @@ async def query_events(
         )
         for r in records
     ]
+
+
+# ---------------------------------------------------------------------------
+# Webhooks
+# ---------------------------------------------------------------------------
+
+@router.post("/webhooks", dependencies=[_Auth])
+async def register_webhook(
+    body: WebhookCreate,
+    response: Response,
+    db: AsyncSession = Depends(get_session),
+) -> WebhookResponse:
+    from sqlalchemy import select
+    from .models import WebhookRecord
+    existing = (await db.execute(
+        select(WebhookRecord).where(WebhookRecord.url == body.url)
+    )).scalar_one_or_none()
+    record = await store.create_or_update_webhook(db, body)
+    response.status_code = 200 if existing else 201
+    return WebhookResponse.from_record(record)
+
+
+@router.get("/webhooks", dependencies=[_Auth])
+async def list_webhooks(
+    db: AsyncSession = Depends(get_session),
+) -> list[WebhookResponse]:
+    records = await store.list_webhooks(db)
+    return [WebhookResponse.from_record(r) for r in records]
+
+
+@router.delete("/webhooks/{webhook_id}", status_code=204, dependencies=[_Auth])
+async def delete_webhook(
+    webhook_id: str,
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    deleted = await store.delete_webhook(db, webhook_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Webhook not found")
 
 
 @router.get("/events/stats", dependencies=[_Auth])

@@ -127,11 +127,6 @@ class TestAppendEvent:
         assert r.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_deleted_endpoints_webhooks_gone(self, client):
-        assert (await client.post("/webhooks", json={})).status_code == 404
-        assert (await client.get("/webhooks")).status_code == 404
-
-    @pytest.mark.asyncio
     async def test_deleted_endpoint_schemas_gone(self, client):
         assert (await client.post("/schemas", json={})).status_code == 404
 
@@ -220,3 +215,58 @@ class TestStats:
         assert "by_source" in body
         assert "by_type" in body
         assert body["total_events"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Webhooks
+# ---------------------------------------------------------------------------
+
+class TestWebhooks:
+    @pytest.mark.asyncio
+    async def test_register_webhook(self, client):
+        r = await client.post("/webhooks", json={"url": "http://test.host/h"})
+        assert r.status_code == 201
+        data = r.json()
+        assert data["url"] == "http://test.host/h"
+        assert "id" in data
+        assert "has_secret" in data  # secret is not exposed directly
+
+    @pytest.mark.asyncio
+    async def test_register_webhook_idempotent(self, client):
+        r1 = await client.post("/webhooks", json={"url": "http://x.test/h", "secret": "a"})
+        r2 = await client.post("/webhooks", json={"url": "http://x.test/h", "secret": "b"})
+        assert r1.status_code == 201
+        assert r2.status_code == 200
+        assert r1.json()["id"] == r2.json()["id"]
+        assert r2.json()["has_secret"] is True  # secret "b" is set
+
+    @pytest.mark.asyncio
+    async def test_list_webhooks(self, client):
+        await client.post("/webhooks", json={"url": "http://list.test/h"})
+        r = await client.get("/webhooks")
+        assert r.status_code == 200
+        assert any(w["url"] == "http://list.test/h" for w in r.json())
+
+    @pytest.mark.asyncio
+    async def test_delete_webhook(self, client):
+        r = await client.post("/webhooks", json={"url": "http://del.test/h"})
+        wh_id = r.json()["id"]
+        r2 = await client.delete(f"/webhooks/{wh_id}")
+        assert r2.status_code == 204
+        r3 = await client.get("/webhooks")
+        assert not any(w["id"] == wh_id for w in r3.json())
+
+    @pytest.mark.asyncio
+    async def test_delete_webhook_not_found(self, client):
+        r = await client.delete("/webhooks/nonexistent")
+        assert r.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_post_event_triggers_delivery(self, client):
+        """Delivery is background — just verify no error on POST /events."""
+        await client.post("/sources", json={"id": "src-wh"})
+        await client.post("/webhooks", json={"url": "http://nowhere.invalid/h"})
+        r = await client.post("/events", json={
+            "source_id": "src-wh", "type": "task.submit", "data": {},
+        })
+        assert r.status_code == 201
