@@ -3,16 +3,14 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.security import APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pydantic import BaseModel, ConfigDict
 
 from . import store
-from . import webhook_delivery
 from .database import get_session
 from .config import get_settings
 from .models import (
@@ -106,42 +104,23 @@ async def get_source(
 # Events
 # ---------------------------------------------------------------------------
 
-@router.post("/events", status_code=201, dependencies=[_Auth])
+@router.post("/events", status_code=202, dependencies=[_Auth])
 async def append_event(
     body: EventCreate,
-    request: Request,
-    background_tasks: BackgroundTasks,
+    response: Response,
     db: AsyncSession = Depends(get_session),
 ) -> EventCreatedResponse:
-    registry: ProjectionRegistry = _get_registry(request)
-    record, warnings = await store.append_event(db, body, projection_registry=registry)
-
-    event_payload = {
-        "id": str(record.id),
-        "source_id": record.source_id,
-        "type": record.type,
-        "ts": record.ts.isoformat(),
-        "data": record.data,
-    }
-
-    async def _deliver():
-        from .database import get_session_factory
-        factory = get_session_factory()
-        async with factory() as session:
-            matching = await store.list_webhooks_for_event(
-                session, record.type, record.source_id
-            )
-        await webhook_delivery.fire_webhooks(matching, event_payload)
-
-    background_tasks.add_task(_deliver)
+    record, created = await store.accept_event(db, body)
+    response.status_code = 202 if created else 200
 
     return EventCreatedResponse(
         id=str(record.id),
         source_id=record.source_id,
         type=record.type,
-        ts=record.ts,
+        ts=record.accepted_at,
         data=record.data,
-        warnings=warnings,
+        warnings=[],
+        status="accepted",
     )
 
 

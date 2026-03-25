@@ -4,7 +4,8 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from src.pasloe.app import app
-from src.pasloe.database import close_engine, init_db
+from src.pasloe.database import close_engine, get_session_factory, init_db
+from src.pasloe.pipeline import PipelineConfig, PipelineRuntime
 from src.pasloe.projections import BaseProjection, ProjectionRegistry
 
 
@@ -20,14 +21,39 @@ async def client():
 
     app.state.projection_registry = ProjectionRegistry([])  # empty by default; tests override as needed
     await init_db()
+    pipeline = PipelineRuntime(
+        session_factory=get_session_factory(),
+        projection_registry=app.state.projection_registry,
+        config=PipelineConfig(
+            poll_interval_seconds=0.01,
+            batch_size=64,
+            lease_seconds=5,
+            retry_base_seconds=0.05,
+            retry_max_seconds=1.0,
+        ),
+    )
+    await pipeline.start()
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as c:
         yield c
 
+    await pipeline.stop()
     await close_engine()
     get_settings.cache_clear()
+
+
+async def _wait_event_visible(client, event_id: str, timeout_s: float = 2.0) -> None:
+    import asyncio
+
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while asyncio.get_running_loop().time() < deadline:
+        r = await client.get(f"/events?id={event_id}")
+        if r.status_code == 200 and r.json():
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"event {event_id} did not become visible within {timeout_s}s")
 
 
 # ---------------------------------------------------------------------------
@@ -88,16 +114,19 @@ class TestAppendEvent:
     @pytest.mark.asyncio
     async def test_append_auto_registers_source(self, client):
         r = await client.post("/events", json={"source_id": "new-src", "type": "ping", "data": {}})
-        assert r.status_code == 201
+        assert r.status_code == 202
         body = r.json()
         assert body["source_id"] == "new-src"
         assert body["warnings"] == []
+        assert body["status"] == "accepted"
+        await _wait_event_visible(client, body["id"])
 
     @pytest.mark.asyncio
     async def test_append_returns_empty_warnings_without_projection(self, client):
         r = await client.post("/events", json={"source_id": "s", "type": "t", "data": {"x": 1}})
-        assert r.status_code == 201
+        assert r.status_code == 202
         assert r.json()["warnings"] == []
+        await _wait_event_visible(client, r.json()["id"])
 
     @pytest.mark.asyncio
     async def test_append_returns_warnings_when_projection_skips(self, client):
@@ -114,11 +143,11 @@ class TestAppendEvent:
 
         app.state.projection_registry = ProjectionRegistry([SkipProj()])
         r = await client.post("/events", json={"source_id": "ws", "type": "typed", "data": {"bad_field": 1}})
-        assert r.status_code == 201
+        assert r.status_code == 202
         body = r.json()
-        assert body["id"] is not None          # event stored
-        assert len(body["warnings"]) == 1
-        assert "bad_field" in body["warnings"][0]
+        assert body["id"] is not None
+        assert body["warnings"] == []
+        await _wait_event_visible(client, body["id"])
 
     @pytest.mark.asyncio
     async def test_deleted_endpoint_events_by_id_gone(self, client):
@@ -142,14 +171,16 @@ class TestAppendEvent:
 class TestQueryEvents:
     @pytest.mark.asyncio
     async def test_query_by_source(self, client):
-        await client.post("/events", json={"source_id": "qs", "type": "t", "data": {}})
+        r0 = await client.post("/events", json={"source_id": "qs", "type": "t", "data": {}})
+        await _wait_event_visible(client, r0.json()["id"])
         r = await client.get("/events?source=qs")
         assert r.status_code == 200
         assert all(e["source_id"] == "qs" for e in r.json())
 
     @pytest.mark.asyncio
     async def test_query_by_type(self, client):
-        await client.post("/events", json={"source_id": "qt", "type": "special", "data": {}})
+        r0 = await client.post("/events", json={"source_id": "qt", "type": "special", "data": {}})
+        await _wait_event_visible(client, r0.json()["id"])
         r = await client.get("/events?type=special")
         assert r.status_code == 200
         assert all(e["type"] == "special" for e in r.json())
@@ -158,6 +189,7 @@ class TestQueryEvents:
     async def test_query_by_id(self, client):
         r1 = await client.post("/events", json={"source_id": "qi", "type": "t", "data": {}})
         event_id = r1.json()["id"]
+        await _wait_event_visible(client, event_id)
         r2 = await client.get(f"/events?id={event_id}")
         assert r2.status_code == 200
         assert len(r2.json()) == 1
@@ -171,7 +203,8 @@ class TestQueryEvents:
     @pytest.mark.asyncio
     async def test_projection_filter_ignored_when_no_projection(self, client):
         """Unknown params are silently ignored when no matching projection."""
-        await client.post("/events", json={"source_id": "pf", "type": "t", "data": {"level": "info"}})
+        r0 = await client.post("/events", json={"source_id": "pf", "type": "t", "data": {"level": "info"}})
+        await _wait_event_visible(client, r0.json()["id"])
         r = await client.get("/events?source=pf&type=t&level=info")
         assert r.status_code == 200  # no error
 
@@ -193,7 +226,8 @@ class TestQueryEvents:
 
         app.state.projection_registry = ProjectionRegistry([LevelProj()])
         for _ in range(3):
-            await client.post("/events", json={"source_id": "lp", "type": "log", "data": {}})
+            r0 = await client.post("/events", json={"source_id": "lp", "type": "log", "data": {}})
+            await _wait_event_visible(client, r0.json()["id"])
 
         r = await client.get("/events?source=lp&type=log&level=error")
         assert r.status_code == 200
@@ -207,7 +241,8 @@ class TestQueryEvents:
 class TestStats:
     @pytest.mark.asyncio
     async def test_stats(self, client):
-        await client.post("/events", json={"source_id": "st", "type": "ev", "data": {}})
+        r0 = await client.post("/events", json={"source_id": "st", "type": "ev", "data": {}})
+        await _wait_event_visible(client, r0.json()["id"])
         r = await client.get("/events/stats")
         assert r.status_code == 200
         body = r.json()
@@ -269,4 +304,4 @@ class TestWebhooks:
         r = await client.post("/events", json={
             "source_id": "src-wh", "type": "task.submit", "data": {},
         })
-        assert r.status_code == 201
+        assert r.status_code == 202

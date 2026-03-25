@@ -70,11 +70,18 @@ async def deliver_to_webhook(
     return False
 
 
-async def fire_webhooks(webhooks: list["WebhookRecord"], event_payload: dict) -> None:
-    """Fire all webhook deliveries concurrently (fire-and-forget callers use this)."""
+async def fire_webhooks(webhooks: list["WebhookRecord"], event_payload: dict) -> bool:
+    """Deliver to all matching webhooks. Returns True only if all succeeded."""
     if not webhooks:
-        return
-    await asyncio.gather(
+        return True
+
+    results = await asyncio.gather(
         *(deliver_to_webhook(wh, event_payload) for wh in webhooks),
         return_exceptions=True,
     )
+    for result in results:
+        if isinstance(result, Exception):
+            return False
+        if result is not True:
+            return False
+    return True

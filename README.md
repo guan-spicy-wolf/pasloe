@@ -1,15 +1,22 @@
 # Pasloe
 
-Append-only event store for the [Yoitsu](https://github.com/guan-spicy-wolf/yoitsu) stack. Pasloe stays schema-agnostic: it stores events, delivers webhooks, and paginates queries, but it does not interpret Palimpsest or Trenni contracts.
+Append-only event store for the [Yoitsu](https://github.com/guan-spicy-wolf/yoitsu) stack.
+
+Pasloe now runs a two-stage architecture:
+
+1. `ingest log` (durable accepted writes)
+2. `read models` (committed events + projection/webhook pipelines)
+
+Producers only need `accepted` from `POST /events`; consumers only read committed events.
 
 ## Key Features
 
-- **Append-Only Event Stream**: Robust storage for system events using SQLite or PostgreSQL.
-- **Modern WebUI**: A beautiful, built-in dashboard for managing webhooks and monitoring sources/events.
-- **Webhook Integration**: Asynchronous delivery of events to registered endpoints with HMAC-SHA256 signing (`X-Pasloe-Signature: sha256=<hex>`), 3-attempt exponential backoff, and per-webhook source/type filtering.
-- **Cursor-Based Pagination**: Efficient event querying using `X-Next-Cursor` for large datasets.
-- **S3 Artifact Support**: Integrated API for generating S3 presigned URLs, enabling secure client-side uploads.
-- **Multi-Client Support**: Seamlessly integrates with Rust, Python, and other clients via REST API.
+- **Two-Stage Durability**: API writes to ingress first (`accepted`), then background commit pipeline makes events visible.
+- **Crash-Recoverable Workers**: `committer`, `projector`, and `webhook` pipelines all use DB lease + retry.
+- **Idempotent Ingest**: optional `idempotency_key` per source.
+- **Cursor-Based Pagination**: Efficient committed-event querying using `X-Next-Cursor`.
+- **Webhook Integration**: asynchronous HMAC-SHA256 delivery with retry.
+- **PostgreSQL-First Deployment**: production defaults now target PostgreSQL.
 
 ---
 
@@ -57,12 +64,11 @@ Features:
 |----------|--------|-------------|
 | `/ui` | `GET` | Access the Web Management Dashboard |
 | `/events` | `GET` | Query events with cursor pagination and filtering |
-| `/events` | `POST` | Append a new event to the stream |
+| `/events` | `POST` | Accept an event into ingress log (`202 accepted`) |
 | `/sources` | `GET` | List all registered data sources |
 | `/webhooks` | `GET` | List active webhook subscriptions |
 | `/webhooks` | `POST` | Register or update a webhook callback |
 | `/webhooks/{id}` | `DELETE` | Remove a webhook subscription |
-| `/artifacts/presign` | `POST` | Generate an S3 presigned URL for secure uploads |
 
 **Authentication**: Include `X-API-Key: <your_key>` in the headers for all requests.
 

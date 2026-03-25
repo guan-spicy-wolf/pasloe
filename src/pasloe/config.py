@@ -4,11 +4,11 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # Database
-    db_type: str = "sqlite"
+    db_type: str = "postgres"
     sqlite_path: str = "./events.db"
-    pg_user: str = "user"          # preserve original defaults
-    pg_password: str = "password"
-    pg_host: str = "localhost"
+    pg_user: str = "yoitsu"
+    pg_password: str = "yoitsu"
+    pg_host: str = "127.0.0.1"
     pg_port: int = 5432
     pg_db: str = "pasloe"
 
@@ -17,6 +17,14 @@ class Settings(BaseSettings):
     port: int = 8000
     api_key: str | None = None
     allow_insecure_http: bool = False
+
+    # Pipelines
+    pipeline_poll_interval_seconds: float = 0.5
+    pipeline_batch_size: int = 64
+    pipeline_lease_seconds: int = 30
+    pipeline_retry_base_seconds: float = 1.0
+    pipeline_retry_max_seconds: float = 60.0
+    health_max_oldest_uncommitted_age_seconds: float = 60.0
 
     # Environment
     env: str = "dev"

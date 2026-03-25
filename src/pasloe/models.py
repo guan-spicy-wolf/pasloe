@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, String, func
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 from .config import is_sqlite
@@ -60,6 +60,63 @@ class EventRecord(Base):
     )
 
 
+class IngressRecord(Base):
+    __tablename__ = "ingress_events"
+
+    id = Column(UUID_TYPE, primary_key=True)
+    source_id = Column(String, nullable=False)
+    type = Column(String, nullable=False)
+    data = Column(JSON_TYPE, server_default="{}", nullable=False)
+    idempotency_key = Column(String, nullable=True)
+    accepted_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    committed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Lifecycle:
+    # accepted  -> committed
+    # accepted rows are retried using next_attempt_at + lease fields.
+    status = Column(String, server_default="accepted", nullable=False)
+    attempts = Column(Integer, server_default="0", nullable=False)
+    next_attempt_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    lease_owner = Column(String, nullable=True)
+    lease_until = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, server_default="", nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("source_id", "idempotency_key", name="uq_ingress_source_idempotency"),
+        Index("idx_ingress_status_next_attempt", "status", "next_attempt_at"),
+        Index("idx_ingress_lease_until", "lease_until"),
+        Index("idx_ingress_accepted_at", "accepted_at"),
+    )
+
+
+class OutboxRecord(Base):
+    __tablename__ = "outbox_events"
+
+    id = Column(UUID_TYPE, primary_key=True)
+    event_id = Column(UUID_TYPE, nullable=False)
+    source_id = Column(String, nullable=False)
+    type = Column(String, nullable=False)
+    data = Column(JSON_TYPE, server_default="{}", nullable=False)
+    event_ts = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # projector / webhook
+    pipeline = Column(String, nullable=False)
+    status = Column(String, server_default="pending", nullable=False)
+    attempts = Column(Integer, server_default="0", nullable=False)
+    next_attempt_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    lease_owner = Column(String, nullable=True)
+    lease_until = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, server_default="", nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("event_id", "pipeline", name="uq_outbox_event_pipeline"),
+        Index("idx_outbox_pipeline_status_next_attempt", "pipeline", "status", "next_attempt_at"),
+        Index("idx_outbox_lease_until", "lease_until"),
+    )
+
+
 class WebhookRecord(Base):
     __tablename__ = "webhooks"
 
@@ -87,6 +144,7 @@ class EventCreate(BaseModel):
     source_id: str
     type: str = Field(min_length=1)
     data: dict = Field(default_factory=dict)
+    idempotency_key: str | None = None
 
 
 class Event(BaseModel):
@@ -113,6 +171,7 @@ class EventCreatedResponse(BaseModel):
     ts: datetime
     data: dict
     warnings: list[str] = Field(default_factory=list)
+    status: str = "accepted"
 
 
 class WebhookCreate(BaseModel):
