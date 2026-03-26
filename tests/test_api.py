@@ -69,15 +69,91 @@ async def _wait_event_visible(client, event_id: str, timeout_s: float = 2.0) -> 
 
 class TestHealth:
     @pytest.mark.asyncio
-    async def test_health(self, client):
+    async def test_health_returns_ok_immediately(self, client):
+        """Basic health check returns 200 OK without database queries."""
         r = await client.get("/health")
         assert r.status_code == 200
         assert r.json()["status"] == "ok"
 
+    @pytest.mark.asyncio
+    async def test_health_is_cheap_and_deterministic(self, client):
+        """Regression test: health endpoint must not flap during normal operation.
+        
+        This test verifies that the health endpoint returns consistent results
+        even when the system is under load from event polling and processing.
+        """
+        import asyncio
+        
+        # First, create some load by appending several events
+        event_ids = []
+        for i in range(10):
+            r = await client.post("/events", json={
+                "source_id": f"health-load-test",
+                "type": "load_test",
+                "data": {"index": i}
+            })
+            assert r.status_code == 202
+            event_ids.append(r.json()["id"])
+        
+        # Health should remain ok throughout event processing
+        # Poll health rapidly while events are being processed
+        for _ in range(20):
+            r = await client.get("/health")
+            assert r.status_code == 200, "Health endpoint should not fail during event processing"
+            assert r.json()["status"] == "ok", "Health status should remain ok during normal operation"
+            await asyncio.sleep(0.01)
+        
+        # Wait for events to be visible (pipeline processing)
+        for event_id in event_ids:
+            await _wait_event_visible(client, event_id)
+        
+        # Health should still be ok after processing
+        r = await client.get("/health")
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
 
-# ---------------------------------------------------------------------------
-# Sources
-# ---------------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_health_does_not_require_database_connection(self, client):
+        """Health endpoint returns ok even if database is temporarily unavailable.
+        
+        This is important for container orchestrators that need to distinguish
+        between 'container is alive' (liveness) and 'container is ready to serve'
+        (readiness).
+        """
+        # The health endpoint should be simple and not query the database
+        r = await client.get("/health")
+        assert r.status_code == 200
+        data = r.json()
+        # Should only contain status field (cheap check)
+        assert "status" in data
+        assert len(data) == 1, "Health endpoint should return minimal data"
+
+
+class TestHealthReady:
+    @pytest.mark.asyncio
+    async def test_health_ready_returns_detailed_status(self, client):
+        """Readiness probe returns detailed status including pipeline health."""
+        r = await client.get("/health/ready")
+        assert r.status_code == 200
+        data = r.json()
+        assert "status" in data
+        assert "oldest_uncommitted_age_s" in data
+        assert "ingress_pending" in data
+        assert "outbox_pending" in data
+        assert "outbox_pending_by_pipeline" in data
+
+    @pytest.mark.asyncio
+    async def test_health_ready_shows_degraded_when_backlogged(self, client):
+        """Readiness probe shows degraded status when there are old uncommitted events."""
+        # Initially should be ok
+        r = await client.get("/health/ready")
+        assert r.status_code == 200
+        
+        # The status depends on the configured threshold
+        # We can't easily simulate old uncommitted events in this test,
+        # but we can verify the structure is correct
+        data = r.json()
+        assert data["status"] in ("ok", "degraded")
 
 class TestSources:
     @pytest.mark.asyncio

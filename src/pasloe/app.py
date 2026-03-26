@@ -59,6 +59,21 @@ app.include_router(router)
 
 @app.get("/health")
 async def health():
+    """Cheap, deterministic health check for load balancers and container orchestrators.
+    
+    Returns 200 OK immediately without database queries to avoid health flaps
+    during normal operation (event polling, startup, etc.).
+    """
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """Readiness probe that checks database connectivity and pipeline health.
+    
+    This is more expensive than /health and may return non-200 during startup
+    or if the database is unavailable. Use for readiness checks, not liveness.
+    """
     settings = get_settings()
     async with get_session_factory()() as db:
         stats = await store.get_stats(db)
